@@ -30,6 +30,8 @@ public class BeastSorter : BaseSettingsPlugin<BeastSorterSettings>
         Input.RegisterKey(Settings.CancelKey);
         Input.RegisterKey(Settings.OpenInventoryKey);
         Input.RegisterKey(Settings.OpenBestiaryKey);
+        Input.RegisterKey(Settings.UseAllBeastsKey);
+        Input.RegisterKey(Settings.ReleaseFilteredBeastsKey);
         return true;
     }
 
@@ -64,6 +66,38 @@ public class BeastSorter : BaseSettingsPlugin<BeastSorterSettings>
         {
             LogMessageFiltered("Cancel key pressed - stopping operation", 1);
             _currentOperation = null;
+        }
+
+        // Check if use all beasts key is pressed
+        if (Input.GetKeyState(Settings.UseAllBeastsKey.Value))
+        {
+            LogMessageFiltered("Use All Beasts key pressed - starting operation", 1);
+            if (_currentOperation == null || _currentOperation.GetAwaiter().IsCompleted)
+            {
+                LogMessageFiltered("Creating new use all beasts operation", 1);
+                _currentOperation = UseAllBeastsInInventory();
+                LogMessageFiltered("Use all beasts operation created", 1);
+            }
+            else
+            {
+                LogMessageFiltered("Operation already in progress", 1);
+            }
+        }
+
+        // Check if release filtered beasts key is pressed
+        if (Input.GetKeyState(Settings.ReleaseFilteredBeastsKey.Value))
+        {
+            LogMessageFiltered("Release Filtered Beasts key pressed - starting operation", 1);
+            if (_currentOperation == null || _currentOperation.GetAwaiter().IsCompleted)
+            {
+                LogMessageFiltered("Creating new release filtered beasts operation", 1);
+                _currentOperation = ReleaseFilteredBeasts();
+                LogMessageFiltered("Release filtered beasts operation created", 1);
+            }
+            else
+            {
+                LogMessageFiltered("Operation already in progress", 1);
+            }
         }
 
         // Draw UI elements if needed
@@ -264,6 +298,177 @@ public class BeastSorter : BaseSettingsPlugin<BeastSorterSettings>
         }
     }
 
+    private async SyncTask<bool> UseAllBeastsInInventory()
+    {
+        LogMessageFiltered("=== UseAllBeastsInInventory STARTED ===", 1);
+        try
+        {
+            LogMessageFiltered("=== Starting Use All Beasts operation ===", 1);
+
+            // Try to open inventory if not visible
+            if (!InGameState.IngameUi.InventoryPanel.IsVisible)
+            {
+                LogMessageFiltered("Inventory panel not visible, attempting to open...", 1);
+                Input.KeyDown(Settings.OpenInventoryKey.Value);
+                await TaskUtils.NextFrame();
+                Input.KeyUp(Settings.OpenInventoryKey.Value);
+                await TaskUtils.NextFrame();
+                
+                // Wait a bit for the panel to open
+                await Task.Delay(Settings.ClickDelay.Value);
+                
+                if (!InGameState.IngameUi.InventoryPanel.IsVisible)
+                {
+                    LogMessage("ERROR: Failed to open inventory panel", 2);
+                    return false;
+                }
+                LogMessageFiltered("SUCCESS: Inventory panel opened", 1);
+            }
+            else
+            {
+                LogMessageFiltered("Inventory panel already visible", 1);
+            }
+
+            // Get all beasts from inventory
+            var beastItems = GetBeastItemsFromInventory();
+            LogMessageFiltered($"Found {beastItems.Count} beasts in inventory", 1);
+            
+            if (!beastItems.Any())
+            {
+                LogMessage("ERROR: No beasts found in inventory", 2);
+                return false;
+            }
+
+            // Process each beast
+            foreach (var beastItem in beastItems)
+            {
+                if (Input.GetKeyState(Settings.CancelKey.Value))
+                {
+                    LogMessageFiltered("Operation cancelled by user", 1);
+                    return false;
+                }
+
+                LogMessageFiltered($"Processing beast: {GetItemBaseName(beastItem.Item)}", 1);
+                
+                if (!await ProcessBeastItem(beastItem))
+                {
+                    LogMessage($"ERROR: Failed to process beast {GetItemBaseName(beastItem.Item)}", 2);
+                    continue; // Continue with next beast even if one fails
+                }
+            }
+
+            LogMessageFiltered("Use All Beasts operation completed successfully", 1);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogMessage($"ERROR during Use All Beasts operation: {ex.Message}", 5);
+            return false;
+        }
+    }
+
+    private async SyncTask<bool> ReleaseFilteredBeasts()
+    {
+        LogMessageFiltered("=== ReleaseFilteredBeasts STARTED ===", 1);
+        try
+        {
+            LogMessageFiltered("=== Starting Release Filtered Beasts operation ===", 1);
+
+            // Try to open Bestiary tab if not visible
+            var bestiaryTab = InGameState.IngameUi.ChallengesPanel?.TabContainer?.BestiaryTab?.CapturedBeastsTab;
+            if (bestiaryTab == null || !bestiaryTab.IsVisible)
+            {
+                LogMessageFiltered("Bestiary tab not visible, attempting to open...", 1);
+                
+                // First try to open the challenges panel
+                if (InGameState.IngameUi.ChallengesPanel?.IsVisible != true)
+                {
+                    Input.KeyDown(Settings.OpenBestiaryKey.Value);
+                    await TaskUtils.NextFrame();
+                    Input.KeyUp(Settings.OpenBestiaryKey.Value);
+                    await TaskUtils.NextFrame();
+                    await Task.Delay(Settings.ClickDelay.Value);
+                }
+                
+                // Now try to navigate to the Bestiary tab
+                var challengesPanel = InGameState.IngameUi.ChallengesPanel;
+                if (challengesPanel?.IsVisible == true)
+                {
+                    // Try to click on the Bestiary tab
+                    var bestiaryTabButton = challengesPanel.TabContainer?.BestiaryTab;
+                    if (bestiaryTabButton != null && bestiaryTabButton.IsVisible)
+                    {
+                        await ClickOnElement(bestiaryTabButton);
+                        await Task.Delay(Settings.ClickDelay.Value);
+                    }
+                }
+                
+                // Check again
+                bestiaryTab = InGameState.IngameUi.ChallengesPanel?.TabContainer?.BestiaryTab?.CapturedBeastsTab;
+                if (bestiaryTab == null || !bestiaryTab.IsVisible)
+                {
+                    LogMessage("ERROR: Failed to open Bestiary tab", 2);
+                    return false;
+                }
+                LogMessageFiltered("SUCCESS: Bestiary tab opened", 1);
+            }
+            else
+            {
+                LogMessageFiltered("Bestiary tab already visible", 1);
+            }
+
+            // Hold Ctrl key for the entire process
+            LogMessageFiltered("Holding Ctrl key for entire release process", 1);
+            Input.KeyDown(Keys.LControlKey);
+
+            try
+            {
+                // Keep releasing the first beast until none are left
+                while (true)
+                {
+                    if (Input.GetKeyState(Settings.CancelKey.Value))
+                    {
+                        LogMessageFiltered("Operation cancelled by user", 1);
+                        return false;
+                    }
+
+                    // Get the first visible beast
+                    var firstBeast = GetFirstVisibleBeast();
+                    if (firstBeast == null)
+                    {
+                        LogMessageFiltered("No more beasts to release", 1);
+                        break;
+                    }
+
+                    LogMessageFiltered($"Releasing first beast: {GetBeastName(firstBeast)}", 1);
+                    
+                    if (!await ReleaseFirstBeast(firstBeast))
+                    {
+                        LogMessage($"ERROR: Failed to release first beast {GetBeastName(firstBeast)}", 2);
+                        break; // Stop if we can't release the first beast
+                    }
+
+                    // Wait a moment for the beast to be released and list to update
+                    await Task.Delay(Settings.ClickDelay.Value);
+                }
+            }
+            finally
+            {
+                // Always release Ctrl key
+                Input.KeyUp(Keys.LControlKey);
+                LogMessageFiltered("Released Ctrl key", 1);
+            }
+
+            LogMessageFiltered("Release Filtered Beasts operation completed successfully", 1);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogMessage($"ERROR during Release Filtered Beasts operation: {ex.Message}", 5);
+            return false;
+        }
+    }
+
     private List<ServerInventory.InventSlotItem> GetCurrencyItemsFromInventory()
     {
         var inventoryItems = InGameState.ServerData.PlayerInventories[0].Inventory.InventorySlotItems;
@@ -285,6 +490,122 @@ public class BeastSorter : BaseSettingsPlugin<BeastSorterSettings>
         return currencyItems;
     }
 
+    private List<ServerInventory.InventSlotItem> GetBeastItemsFromInventory()
+    {
+        var inventoryItems = InGameState.ServerData.PlayerInventories[0].Inventory.InventorySlotItems;
+        var beastItems = new List<ServerInventory.InventSlotItem>();
+
+        int totalBeasts = 0;
+        foreach (var item in inventoryItems)
+        {
+            if (IsBeastItem(item.Item))
+            {
+                beastItems.Add(item);
+                totalBeasts += item.Item.GetComponent<Stack>()?.Size ?? 1;
+            }
+        }
+
+        LogMessageFiltered($"Found {beastItems.Count} inventory slots with beasts", 1);
+        LogMessageFiltered($"Total beasts: {totalBeasts}", 1);
+
+        return beastItems;
+    }
+
+    private List<CapturedBeast> GetVisibleBeasts()
+    {
+        var visibleBeasts = new List<CapturedBeast>();
+        
+        try
+        {
+            var capturedBeastsTab = InGameState.IngameUi.ChallengesPanel?.TabContainer?.BestiaryTab?.CapturedBeastsTab;
+            if (capturedBeastsTab == null || !capturedBeastsTab.IsVisible)
+            {
+                LogMessage("Captured beasts tab is not visible", 2);
+                return visibleBeasts;
+            }
+
+            var beasts = capturedBeastsTab.CapturedBeasts;
+            if (beasts == null || beasts.Count == 0)
+            {
+                LogMessage($"No captured beasts found. Count: {beasts?.Count ?? 0}", 2);
+                return visibleBeasts;
+            }
+
+            LogMessageFiltered($"Found {beasts.Count} visible beasts to release", 1);
+            
+            // Return all visible beasts (user has already filtered them manually)
+            return beasts.ToList();
+        }
+        catch (Exception ex)
+        {
+            LogMessage($"Error getting visible beasts: {ex.Message}", 5);
+        }
+
+        return visibleBeasts;
+    }
+
+    private CapturedBeast GetFirstVisibleBeast()
+    {
+        try
+        {
+            var capturedBeastsTab = InGameState.IngameUi.ChallengesPanel?.TabContainer?.BestiaryTab?.CapturedBeastsTab;
+            if (capturedBeastsTab == null || !capturedBeastsTab.IsVisible)
+            {
+                LogMessage("Captured beasts tab is not visible", 2);
+                return null;
+            }
+
+            var beasts = capturedBeastsTab.CapturedBeasts;
+            if (beasts == null || beasts.Count == 0)
+            {
+                LogMessageFiltered("No captured beasts found", 1);
+                return null;
+            }
+
+            // Get the first beast (index 0)
+            var firstBeast = beasts[0];
+            if (firstBeast != null && firstBeast.IsValid)
+            {
+                LogMessageFiltered("Found first visible beast", 1);
+                return firstBeast;
+            }
+            else
+            {
+                LogMessage("First beast is null or invalid", 2);
+            }
+        }
+        catch (Exception ex)
+        {
+            LogMessage($"Error getting first visible beast: {ex.Message}", 5);
+        }
+
+        return null;
+    }
+
+    private string GetBeastName(CapturedBeast beast)
+    {
+        try
+        {
+            if (beast?.Children == null || beast.Children.Count < 2)
+            {
+                return "";
+            }
+            
+            // Element 1 is the beast name
+            var nameElement = beast.Children.ElementAtOrDefault(1);
+            if (nameElement != null)
+            {
+                return nameElement.Text ?? "";
+            }
+        }
+        catch (Exception ex)
+        {
+            LogMessage($"Error getting beast name: {ex.Message}", 5);
+        }
+        
+        return "";
+    }
+
     private bool IsCurrencyItem(Entity item)
     {
         if (item == null || !item.IsValid) return false;
@@ -304,6 +625,22 @@ public class BeastSorter : BaseSettingsPlugin<BeastSorterSettings>
         // Only match exact "Bestiary Orb", not "Imprinted Bestiary Orb"
         // This prevents processing captured beasts that are already in inventory
         return baseName.Equals("Bestiary Orb", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsBeastItem(Entity item)
+    {
+        if (item == null || !item.IsValid) return false;
+
+        // Check if item is a captured beast (Imprinted Bestiary Orb)
+        var baseName = GameController.Files.BaseItemTypes.Translate(item.Path)?.BaseName ?? "";
+        
+        if (Settings.CurrencyFilter.DebugItemNames.Value)
+        {
+            LogMessageFiltered($"Checking beast item: {baseName}", 1);
+        }
+        
+        // Match "Imprinted Bestiary Orb" which are the captured beasts
+        return baseName.Equals("Imprinted Bestiary Orb", StringComparison.OrdinalIgnoreCase);
     }
 
     private async SyncTask<bool> ProcessCurrencyItem(ServerInventory.InventSlotItem currencyItem)
@@ -413,6 +750,145 @@ public class BeastSorter : BaseSettingsPlugin<BeastSorterSettings>
         catch (Exception ex)
         {
             LogMessage($"ERROR processing Bestiary Orb: {ex.Message}", 5);
+            return false;
+        }
+    }
+
+    private async SyncTask<bool> ProcessBeastItem(ServerInventory.InventSlotItem beastItem)
+    {
+        try
+        {
+            LogMessageFiltered($"Processing beast: {GetItemBaseName(beastItem.Item)}", 1);
+
+            // Check for cancel key before starting
+            if (Input.GetKeyState(Settings.CancelKey.Value))
+            {
+                LogMessageFiltered("Operation cancelled by user before processing beast", 1);
+                return false;
+            }
+
+            // Step 1: Right-click the beast to use it (this adds it to bestiary and removes from inventory)
+            LogMessageFiltered("Step 1: Right-clicking beast to use it...", 1);
+            if (!await RightClickItem(beastItem))
+            {
+                LogMessage("ERROR: Failed to right-click beast", 2);
+                return false;
+            }
+            LogMessageFiltered("SUCCESS: Right-clicked beast - it has been used and added to bestiary", 1);
+
+            // Step 2: Wait a moment for the beast to be processed
+            LogMessageFiltered("Step 2: Waiting for beast processing...", 1);
+            await Task.Delay(Settings.ClickDelay.Value);
+            LogMessageFiltered("SUCCESS: Beast processing completed", 1);
+
+            LogMessageFiltered("SUCCESS: Processed beast", 1);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogMessage($"ERROR processing beast: {ex.Message}", 5);
+            return false;
+        }
+    }
+
+    private async SyncTask<bool> ReleaseBeast(CapturedBeast beast)
+    {
+        try
+        {
+            LogMessageFiltered($"Releasing beast: {GetBeastName(beast)}", 1);
+
+            // Check for cancel key before starting
+            if (Input.GetKeyState(Settings.CancelKey.Value))
+            {
+                LogMessageFiltered("Operation cancelled by user before releasing beast", 1);
+                return false;
+            }
+
+            // Get the release button (element 3)
+            if (beast?.Children == null || beast.Children.Count < 4)
+            {
+                LogMessage("ERROR: Beast element doesn't have enough children for release button", 2);
+                return false;
+            }
+
+            var releaseButton = beast.Children.ElementAtOrDefault(3);
+            if (releaseButton == null || !releaseButton.IsValid)
+            {
+                LogMessage("ERROR: Release button not found or invalid", 2);
+                return false;
+            }
+
+            // Step 1: Ctrl+Left-click the release button
+            LogMessageFiltered("Step 1: Ctrl+Left-clicking release button...", 1);
+            if (!await CtrlLeftClickElement(releaseButton))
+            {
+                LogMessage("ERROR: Failed to Ctrl+Left-click release button", 2);
+                return false;
+            }
+            LogMessageFiltered("SUCCESS: Ctrl+Left-clicked release button", 1);
+
+            // Step 2: Wait a moment for the beast to be released
+            LogMessageFiltered("Step 2: Waiting for beast release...", 1);
+            await Task.Delay(Settings.ClickDelay.Value);
+            LogMessageFiltered("SUCCESS: Beast release completed", 1);
+
+            LogMessageFiltered("SUCCESS: Released beast", 1);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogMessage($"ERROR releasing beast: {ex.Message}", 5);
+            return false;
+        }
+    }
+
+    private async SyncTask<bool> ReleaseFirstBeast(CapturedBeast beast)
+    {
+        try
+        {
+            LogMessageFiltered($"Releasing first beast: {GetBeastName(beast)}", 1);
+
+            // Check for cancel key before starting
+            if (Input.GetKeyState(Settings.CancelKey.Value))
+            {
+                LogMessageFiltered("Operation cancelled by user before releasing beast", 1);
+                return false;
+            }
+
+            // Get the release button (element 3)
+            if (beast?.Children == null || beast.Children.Count < 4)
+            {
+                LogMessage("ERROR: Beast element doesn't have enough children for release button", 2);
+                return false;
+            }
+
+            var releaseButton = beast.Children.ElementAtOrDefault(3);
+            if (releaseButton == null || !releaseButton.IsValid)
+            {
+                LogMessage("ERROR: Release button not found or invalid", 2);
+                return false;
+            }
+
+            // Step 1: Left-click the release button (Ctrl is already held)
+            LogMessageFiltered("Step 1: Left-clicking release button (Ctrl already held)...", 1);
+            if (!await LeftClickElement(releaseButton))
+            {
+                LogMessage("ERROR: Failed to Left-click release button", 2);
+                return false;
+            }
+            LogMessageFiltered("SUCCESS: Left-clicked release button", 1);
+
+            // Step 2: Wait a moment for the beast to be released
+            LogMessageFiltered("Step 2: Waiting for beast release...", 1);
+            await Task.Delay(Settings.ClickDelay.Value);
+            LogMessageFiltered("SUCCESS: Beast release completed", 1);
+
+            LogMessageFiltered("SUCCESS: Released first beast", 1);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogMessage($"ERROR releasing first beast: {ex.Message}", 5);
             return false;
         }
     }
@@ -657,6 +1133,66 @@ public class BeastSorter : BaseSettingsPlugin<BeastSorterSettings>
         }
     }
 
+    private async SyncTask<bool> CtrlLeftClickElement(Element element)
+    {
+        try
+        {
+            var elementRect = element.GetClientRect();
+            var clickPosition = elementRect.Center + WindowOffset;
+
+            // Move mouse to element
+            Input.SetCursorPos(clickPosition);
+            // Wait until the mouse is actually over the element (or a short timeout)
+            await TaskUtils.CheckEveryFrame(() => IsMouseInPosition(clickPosition), new CancellationTokenSource(100).Token);
+
+            // Hold Ctrl key
+            Input.KeyDown(Keys.Control);
+            await TaskUtils.NextFrame();
+            
+            // Left-click the element
+            Input.LeftDown();
+            await TaskUtils.NextFrame();
+            Input.LeftUp();
+            await TaskUtils.NextFrame();
+            
+            // Release Ctrl key
+            Input.KeyUp(Keys.Control);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogMessage($"Error Ctrl+Left-clicking element: {ex.Message}", 5);
+            return false;
+        }
+    }
+
+    private async SyncTask<bool> LeftClickElement(Element element)
+    {
+        try
+        {
+            var elementRect = element.GetClientRect();
+            var clickPosition = elementRect.Center + WindowOffset;
+
+            // Move mouse to element
+            Input.SetCursorPos(clickPosition);
+            // Wait until the mouse is actually over the element (or a short timeout)
+            await TaskUtils.CheckEveryFrame(() => IsMouseInPosition(clickPosition), new CancellationTokenSource(100).Token);
+
+            // Left-click the element (Ctrl is already held)
+            Input.LeftDown();
+            await TaskUtils.NextFrame();
+            Input.LeftUp();
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogMessage($"Error Left-clicking element: {ex.Message}", 5);
+            return false;
+        }
+    }
+
     private async SyncTask<bool> WaitForItemPlaced()
     {
         var maxWaitTime = Settings.WaitTimeout.Value;
@@ -888,8 +1424,12 @@ public class BeastSorter : BaseSettingsPlugin<BeastSorterSettings>
     {
         if (!Settings.ShowDebugInfo.Value) return;
         
-        var debugText = $"BeastSorter Status: {(_currentOperation?.GetAwaiter().IsCompleted == false ? "Running" : "Idle")}";
+        var operationStatus = _currentOperation?.GetAwaiter().IsCompleted == false ? "Running" : "Idle";
+        var debugText = $"BeastSorter Status: {operationStatus}";
         Graphics.DrawText(debugText, new Vector2(10, 10), Color.White);
+        
+        var hotkeyText = $"Hotkeys: F7=Use Orbs, F8=Cancel, F9=Use All Beasts, F10=Release Filtered";
+        Graphics.DrawText(hotkeyText, new Vector2(10, 30), Color.White);
     }
 }
 

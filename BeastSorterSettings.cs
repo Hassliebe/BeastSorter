@@ -26,6 +26,12 @@ public class BeastSorterSettings : ISettings
     [Menu("Open Bestiary Key", "Key to open bestiary panel if not already open")]
     public HotkeyNode OpenBestiaryKey { get; set; } = new HotkeyNode(Keys.N);
 
+    [Menu("Use All Beasts Key", "Press this key to use all beasts in inventory")]
+    public HotkeyNode UseAllBeastsKey { get; set; } = new HotkeyNode(Keys.F9);
+
+    [Menu("Release Filtered Beasts Key", "Press this key to release beasts matching the filter regex")]
+    public HotkeyNode ReleaseFilteredBeastsKey { get; set; } = new HotkeyNode(Keys.F10);
+
     [Menu("Show Debug Info", "Display debug information on screen")]
     public ToggleNode ShowDebugInfo { get; set; } = new ToggleNode(true);
 
